@@ -306,7 +306,10 @@ func (v *InlineVerifier) PeriodicallyVerifyBinlogEvents(ctx context.Context) {
 				v.ErrorHandler.Fatal("inline_verifier", err)
 			}
 
-			v.readdMismatchedPaginationKeysToBeVerifiedAgain(mismatches)
+			err = v.readdMismatchedPaginationKeysToBeVerifiedAgain(mismatches)
+			if err != nil {
+				v.ErrorHandler.Fatal("inline_verifier", err)
+			}
 
 			v.logger.WithFields(logrus.Fields{
 				"remainingRowCount": v.reverifyStore.currentRowCount,
@@ -332,7 +335,11 @@ func (v *InlineVerifier) VerifyBeforeCutover() error {
 			return err
 		}
 
-		v.readdMismatchedPaginationKeysToBeVerifiedAgain(mismatches)
+		err = v.readdMismatchedPaginationKeysToBeVerifiedAgain(mismatches)
+		if err != nil {
+			return err
+		}
+
 		after := v.reverifyStore.currentRowCount
 		timeToVerify = time.Now().Sub(start)
 
@@ -559,6 +566,11 @@ func (v *InlineVerifier) binlogEventListener(evs []DMLEvent) error {
 	}
 
 	for _, ev := range evs {
+		validateTable := v.TableSchemaCache.Get(ev.Database(), ev.Table())
+		if validateTable == nil {
+			return fmt.Errorf("programming error? %s.%s is not found in TableSchemaCache but is being reverified", ev.Database(), ev.Table())
+		}
+
 		paginationKey, err := ev.PaginationKey()
 		if err != nil {
 			return err
@@ -575,15 +587,19 @@ func (v *InlineVerifier) binlogEventListener(evs []DMLEvent) error {
 	return nil
 }
 
-func (v *InlineVerifier) readdMismatchedPaginationKeysToBeVerifiedAgain(mismatches map[string]map[string][]uint64) {
+func (v *InlineVerifier) readdMismatchedPaginationKeysToBeVerifiedAgain(mismatches map[string]map[string][]uint64) error {
 	for schemaName, _ := range mismatches {
 		for tableName, paginationKeys := range mismatches[schemaName] {
 			table := v.TableSchemaCache.Get(schemaName, tableName)
+			if table == nil {
+				return fmt.Errorf("programming error? %s.%s is not found in TableSchemaCache but is being reverified", schemaName, tableName)
+			}
 			for _, paginationKey := range paginationKeys {
 				v.reverifyStore.Add(table, paginationKey)
 			}
 		}
 	}
+	return nil
 }
 
 // Returns mismatches in the form of db -> table -> paginationKeys
