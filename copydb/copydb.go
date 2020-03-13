@@ -60,19 +60,63 @@ func (this *CopydbFerry) CreateDatabasesAndTables() error {
 	// We need to create the same table/schemas on the target database
 	// as the ones we are copying.
 	logrus.Info("creating databases and tables on target")
+
+	tableReferences := make(map[ghostferry.QualifiedTableName]ghostferry.TableForeignKeys)
 	for tableName := range this.Ferry.Tables {
 		t := strings.Split(tableName, ".")
+		table := ghostferry.NewQualifiedTableName(t[0], t[1])
 
-		err := this.createDatabaseIfExistsOnTarget(t[0])
+		referencedTables, err := ghostferry.GetForeignKeyTablesOfTable(this.Ferry.SourceDB, table)
 		if err != nil {
-			logrus.WithError(err).WithField("database", t[0]).Error("cannot create database, this may leave the target database in an insane state")
+			logrus.WithError(err).WithField("table", table).Error("cannot analyze database table foreign keys")
 			return err
 		}
 
-		err = this.createTableOnTarget(t[0], t[1])
-		if err != nil {
-			logrus.WithError(err).WithField("table", tableName).Error("cannot create table, this may leave the target database in an insane state")
-			return err
+		logrus.Debugf("found %d reference tables for %s", len(referencedTables), table)
+		tableReferences[table] = referencedTables
+	}
+
+	// simple fix-point loop: make sure we create at least one table per
+	// iteration and mark tables as able to create as soon as they no-longer
+	// refer to other tables
+	for len(tableReferences) > 0 {
+		createdTable := false
+		for table, referencedTables := range tableReferences {
+			if len(referencedTables) > 0 {
+				continue
+			}
+			logrus.Debugf("creating database table %s", table)
+
+			err := this.createDatabaseIfExistsOnTarget(table.SchemaName)
+			if err != nil {
+				logrus.WithError(err).WithField("database", table.SchemaName).Error("cannot create database, this may leave the target database in an insane state")
+				return err
+			}
+
+			err = this.createTableOnTarget(table.SchemaName, table.TableName)
+			if err != nil {
+				logrus.WithError(err).WithField("table", table).Error("cannot create table, this may leave the target database in an insane state")
+				return err
+			}
+
+			// mark any table referring to the table as potential candidates
+			// for being created now
+			for otherTable, otherReferencedTables := range tableReferences {
+				if _, found := otherReferencedTables[table]; found {
+					delete(otherReferencedTables, table)
+					if len(otherReferencedTables) == 0 {
+						logrus.Debugf("creation of %s unblocked creation of %s", table, otherTable)
+					}
+				}
+
+			}
+
+			delete(tableReferences, table)
+			createdTable = true
+		}
+
+		if !createdTable {
+			return fmt.Errorf("failed creating tables: all %d remaining tables have foreign references", len(tableReferences))
 		}
 	}
 
