@@ -76,7 +76,7 @@ func (f *IntegrationFerry) SendStatusAndWaitUntilContinue(status string, data ..
 // Method override for Start in order to send status to the integration
 // server.
 func (f *IntegrationFerry) Start() error {
-	f.Ferry.DataIterator.AddBatchListener(func(rowBatch *ghostferry.RowBatch) error {
+	f.Ferry.DataIterator.AddBatchListener(func(rowBatch ghostferry.RowBatch) error {
 		return f.SendStatusAndWaitUntilContinue(StatusBeforeRowCopy, rowBatch.TableSchema().Name)
 	})
 
@@ -89,7 +89,7 @@ func (f *IntegrationFerry) Start() error {
 		return err
 	}
 
-	f.Ferry.DataIterator.AddBatchListener(func(rowBatch *ghostferry.RowBatch) error {
+	f.Ferry.DataIterator.AddBatchListener(func(rowBatch ghostferry.RowBatch) error {
 		return f.SendStatusAndWaitUntilContinue(StatusAfterRowCopy, rowBatch.TableSchema().Name)
 	})
 

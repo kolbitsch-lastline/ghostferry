@@ -41,9 +41,9 @@ type CursorConfig struct {
 	ReadRetries     int
 }
 
-// returns a new Cursor with an embedded copy of itself
-func (c *CursorConfig) NewCursor(table *TableSchema, startPaginationKey, maxPaginationKey uint64) *Cursor {
-	return &Cursor{
+// returns a new PaginatedCursor with an embedded copy of itself
+func (c *CursorConfig) NewPaginatedCursor(table *TableSchema, startPaginationKey, maxPaginationKey uint64) *PaginatedCursor {
+	return &PaginatedCursor{
 		CursorConfig:                *c,
 		Table:                       table,
 		MaxPaginationKey:            maxPaginationKey,
@@ -52,14 +52,14 @@ func (c *CursorConfig) NewCursor(table *TableSchema, startPaginationKey, maxPagi
 	}
 }
 
-// returns a new Cursor with an embedded copy of itself
-func (c *CursorConfig) NewCursorWithoutRowLock(table *TableSchema, startPaginationKey, maxPaginationKey uint64) *Cursor {
-	cursor := c.NewCursor(table, startPaginationKey, maxPaginationKey)
+// returns a new PaginatedCursor with an embedded copy of itself
+func (c *CursorConfig) NewPaginatedCursorWithoutRowLock(table *TableSchema, startPaginationKey, maxPaginationKey uint64) *PaginatedCursor {
+	cursor := c.NewPaginatedCursor(table, startPaginationKey, maxPaginationKey)
 	cursor.RowLock = false
 	return cursor
 }
 
-type Cursor struct {
+type PaginatedCursor struct {
 	CursorConfig
 
 	Table            *TableSchema
@@ -71,7 +71,7 @@ type Cursor struct {
 	logger                      *logrus.Entry
 }
 
-func (c *Cursor) Each(f func(*RowBatch) error) error {
+func (c *PaginatedCursor) Each(f func(InsertRowBatch) error) error {
 	c.logger = logrus.WithFields(logrus.Fields{
 		"table": c.Table.String(),
 		"tag":   "cursor",
@@ -84,7 +84,7 @@ func (c *Cursor) Each(f func(*RowBatch) error) error {
 
 	for c.lastSuccessfulPaginationKey < c.MaxPaginationKey {
 		var tx SqlPreparerAndRollbacker
-		var batch *RowBatch
+		var batch InsertRowBatch
 		var paginationKeypos uint64
 
 		err := WithRetries(c.ReadRetries, 0, c.logger, "fetch rows", func() (err error) {
@@ -145,7 +145,7 @@ func (c *Cursor) Each(f func(*RowBatch) error) error {
 	return nil
 }
 
-func (c *Cursor) Fetch(db SqlPreparer) (batch *RowBatch, paginationKeypos uint64, err error) {
+func (c *PaginatedCursor) Fetch(db SqlPreparer) (batch InsertRowBatch, paginationKeypos uint64, err error) {
 	var selectBuilder squirrel.SelectBuilder
 
 	if c.BuildSelect != nil {
@@ -245,12 +245,160 @@ func (c *Cursor) Fetch(db SqlPreparer) (batch *RowBatch, paginationKeypos uint64
 		}
 	}
 
-	batch = &RowBatch{
-		values:             batchData,
-		paginationKeyIndex: paginationKeyIndex,
-		table:              c.Table,
+	batch = NewDataRowBatchWithPaginationKey(c.Table, batchData, paginationKeyIndex)
+	logger.Debugf("found %d rows", batch.Size())
+
+	return
+}
+
+// returns a new PaginatedCursor with an embedded copy of itself
+func (c *CursorConfig) NewFullTableCursor(table *TableSchema) *FullTableCursor {
+	return &FullTableCursor{
+		DB:          c.DB,
+		Table:       table,
+		BatchSize:   c.BatchSize,
+		ReadRetries: c.ReadRetries,
+	}
+}
+
+type FullTableCursor struct {
+	DB          *sql.DB
+	Table       *TableSchema
+	BatchSize   uint64
+	ReadRetries int
+
+	logger *logrus.Entry
+}
+
+func (c *FullTableCursor) Each(f func(RowBatch) error) error {
+	c.logger = logrus.WithFields(logrus.Fields{
+		"table": c.Table.String(),
+		"tag":   "fullTableCursor",
+	})
+
+	// we do not support pagination, so we cannot resume copying of full-table
+	// copies. We need to send out a way to re-initialize and prepare for a
+	// full-table copy
+	initBatch := NewTruncateTableBatch(c.Table)
+	err := f(initBatch)
+	if err != nil {
+		c.logger.WithError(err).Error("failed to call init-each callback")
+		return err
 	}
 
+	err = WithRetries(c.ReadRetries, 0, c.logger, "fetch rows", func() (err error) {
+		tx, err := c.DB.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_, err := tx.Query("UNLOCK TABLES")
+			if err != nil {
+				c.logger.WithError(err).Error("unlocking table failed")
+			}
+			tx.Rollback()
+		}()
+
+		// NOTE: We need to hold the row-lock on all rows for the entire
+		// operation. Yes, crazy, but if we can't paginate, what are we supposed
+		// to do? We really, *really*, *really* only use this for small tables
+		_, err = tx.Query(fmt.Sprintf("LOCK TABLES %s WRITE", QuotedTableName(c.Table)))
+		if err != nil {
+			c.logger.WithError(err).Error("locking table failed")
+			return err
+		}
+
+		rowOffset := 0
+		for {
+			c.logger.Debugf("fetching full-table batch at offset %d", rowOffset)
+			batch, err := c.Fetch(tx, rowOffset)
+			if err != nil {
+				c.logger.WithError(err).Errorf("failed to invoke fetch at offset %d", rowOffset)
+				return err
+			}
+
+			err = f(batch)
+			if err != nil {
+				c.logger.WithError(err).Error("failed to call each callback")
+				return err
+			}
+
+			if batch.Size() < int(c.BatchSize) {
+				c.logger.Debugf("there are no more rows to copy: last batch contained %d/%d rows", batch.Size(), c.BatchSize)
+				return nil
+			}
+
+			rowOffset += batch.Size()
+		}
+	})
+
+	return err
+}
+
+func (c *FullTableCursor) Fetch(db SqlPreparer, rowOffset int) (batch InsertRowBatch, err error) {
+	// NOTE: The caller already locked the table for us
+	selectBuilder := squirrel.Select("*").
+		From(QuotedTableName(c.Table)).
+		Limit(c.BatchSize).
+		Offset(uint64(rowOffset))
+	query, args, err := selectBuilder.ToSql()
+	if err != nil {
+		c.logger.WithError(err).Error("failed to build limit-offset sql")
+		return
+	}
+
+	splitQuery := strings.Split(query, "FROM")
+	loggedQuery := fmt.Sprintf("SELECT [omitted] FROM %s", splitQuery[1])
+
+	logger := c.logger.WithFields(logrus.Fields{
+		"sql":  loggedQuery,
+		"args": args,
+	})
+
+	// This query must be a prepared query. If it is not, querying will use
+	// MySQL's plain text interface, which will scan all values into []uint8
+	// if we give it []interface{}.
+	stmt, err := db.Prepare(query)
+	if err != nil {
+		logger.WithError(err).Error("failed to prepare query")
+		return
+	}
+
+	defer stmt.Close()
+
+	rows, err := stmt.Query(args...)
+	if err != nil {
+		logger.WithError(err).Error("failed to query database")
+		return
+	}
+
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		logger.WithError(err).Error("failed to get columns")
+		return
+	}
+
+	var rowData RowData
+	var batchData []RowData
+
+	for rows.Next() {
+		rowData, err = ScanGenericRow(rows, len(columns))
+		if err != nil {
+			logger.WithError(err).Error("failed to scan row")
+			return
+		}
+
+		batchData = append(batchData, rowData)
+	}
+
+	err = rows.Err()
+	if err != nil {
+		return
+	}
+
+	batch = NewDataRowBatch(c.Table, batchData)
 	logger.Debugf("found %d rows", batch.Size())
 
 	return

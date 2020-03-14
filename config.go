@@ -273,11 +273,32 @@ func (c ColumnIgnoreConfig) IgnoredColumnsFor(schemaName, tableName string) map[
 // precedence.
 type CascadingPaginationColumnConfig struct {
 	// PerTable has greatest specificity and takes precedence over the other options
+	FullTableCopies map[string][]string // SchemaName => TableNames
+
+	// PerTable has next greatest specificity and takes precedence over the other options
 	PerTable map[string]map[string]string // SchemaName => TableName => ColumnName
 
 	// FallbackColumn is a global default to fallback to and is less specific than the
 	// default, which is the Primary Key
 	FallbackColumn string
+}
+
+func (c *CascadingPaginationColumnConfig) IsFullCopyTable(schemaName, tableName string) bool {
+	if c == nil {
+		return false
+	}
+
+	tableConfig, found := c.FullTableCopies[schemaName]
+	if !found {
+		return false
+	}
+
+	for _, table := range tableConfig {
+		if table == tableName {
+			return true
+		}
+	}
+	return false
 }
 
 // PaginationColumnFor is a helper function to retrieve the column name to paginate by
@@ -475,9 +496,10 @@ type Config struct {
 	IgnoredColumnsForVerification ColumnIgnoreConfig
 
 	// Ghostferry requires a single numeric column to paginate over tables. Inferring that column is done in the following exact order:
-	// 1. Use the PerTable pagination column, if configured for a table. Fail if we cannot find this column in the table.
-	// 2. Use the table's primary key column as the pagination column. Fail if the primary key is not numeric or is a composite key without a FallbackColumn specified.
-	// 3. Use the FallbackColumn pagination column, if configured. Fail if we cannot find this column in the table.
+	// 1. Find the table in the FullCopyTables list and perform non-paginated copies (only reasonable for small tables).
+	// 2. Use the PerTable pagination column, if configured for a table. Fail if we cannot find this column in the table.
+	// 3. Use the table's primary key column as the pagination column. Fail if the primary key is not numeric or is a composite key without a FallbackColumn specified.
+	// 4. Use the FallbackColumn pagination column, if configured. Fail if we cannot find this column in the table.
 	CascadingPaginationColumnConfig *CascadingPaginationColumnConfig
 }
 

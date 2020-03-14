@@ -57,7 +57,7 @@ func (this *RowBatchTestSuite) TestRowBatchGeneratesInsertQuery() {
 		ghostferry.RowData{1001, []byte("val2"), true},
 		ghostferry.RowData{1002, []byte("val3"), true},
 	}
-	batch := ghostferry.NewRowBatch(this.sourceTable, vals, 0)
+	batch := ghostferry.NewDataRowBatchWithPaginationKey(this.sourceTable, vals, 0)
 	this.Require().Equal(vals, batch.Values())
 
 	q1, v1, err := batch.AsSQLQuery(this.targetTable.Schema, this.targetTable.Name)
@@ -79,7 +79,7 @@ func (this *RowBatchTestSuite) TestRowBatchWithWrongColumnsReturnsError() {
 		ghostferry.RowData{1001},
 		ghostferry.RowData{1002, []byte("val2"), true},
 	}
-	batch := ghostferry.NewRowBatch(this.sourceTable, vals, 0)
+	batch := ghostferry.NewDataRowBatchWithPaginationKey(this.sourceTable, vals, 0)
 
 	_, _, err := batch.AsSQLQuery(this.targetTable.Schema, this.targetTable.Name)
 	this.Require().NotNil(err)
@@ -90,7 +90,7 @@ func (this *RowBatchTestSuite) TestRowBatchMetadata() {
 	vals := []ghostferry.RowData{
 		ghostferry.RowData{1000},
 	}
-	batch := ghostferry.NewRowBatch(this.sourceTable, vals, 0)
+	batch := ghostferry.NewDataRowBatchWithPaginationKey(this.sourceTable, vals, 0)
 
 	this.Require().Equal("test_schema", batch.TableSchema().Schema)
 	this.Require().Equal("test_table", batch.TableSchema().Name)
@@ -103,7 +103,7 @@ func (this *RowBatchTestSuite) TestRowBatchNoPaginationKeyIndex() {
 	vals := []ghostferry.RowData{
 		ghostferry.RowData{"hello"},
 	}
-	batch := ghostferry.NewRowBatch(this.sourceTable, vals, -1)
+	batch := ghostferry.NewDataRowBatch(this.sourceTable, vals)
 
 	this.Require().Equal(false, batch.ValuesContainPaginationKey())
 }

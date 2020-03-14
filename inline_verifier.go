@@ -244,7 +244,7 @@ func (v *InlineVerifier) Result() (VerificationResultAndStatus, error) {
 	return VerificationResultAndStatus{}, nil
 }
 
-func (v *InlineVerifier) CheckFingerprintInline(tx *sql.Tx, targetSchema, targetTable string, sourceBatch *RowBatch) ([]uint64, error) {
+func (v *InlineVerifier) CheckFingerprintInline(tx *sql.Tx, targetSchema, targetTable string, sourceBatch InsertRowBatch) ([]uint64, error) {
 	table := sourceBatch.TableSchema()
 
 	paginationKeys := make([]uint64, len(sourceBatch.Values()))

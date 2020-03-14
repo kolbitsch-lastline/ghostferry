@@ -10,11 +10,11 @@ import (
 type TestFerry struct {
 	*ghostferry.Ferry
 
-	BeforeBatchCopyListener   func(batch *ghostferry.RowBatch) error
+	BeforeBatchCopyListener   func(batch ghostferry.RowBatch) error
 	BeforeBinlogApplyListener func(events []ghostferry.DMLEvent) error
 	BeforeRowCopyDoneListener func() error
 
-	AfterBatchCopyListener   func(batch *ghostferry.RowBatch) error
+	AfterBatchCopyListener   func(batch ghostferry.RowBatch) error
 	AfterBinlogApplyListener func(events []ghostferry.DMLEvent) error
 	AfterRowCopyDoneListener func() error
 }
