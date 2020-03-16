@@ -245,6 +245,64 @@ func (this *DMLEventsTestSuite) TestBinlogDeleteEventMetadata() {
 	this.Require().Nil(dmlEvents[0].NewValues())
 }
 
+func (this *DMLEventsTestSuite) testPaginationKey(rows [][]interface{}) uint64 {
+	rowsEvent := &replication.RowsEvent{
+		Table: this.tableMapEvent,
+		Rows:  rows,
+	}
+	dmlEvents, _ := ghostferry.NewBinlogInsertEvents(this.sourceTable, rowsEvent, mysql.Position{})
+
+	pagintionKey, err := dmlEvents[0].PaginationKey()
+	this.Require().Nil(err)
+	return pagintionKey
+}
+
+func (this *DMLEventsTestSuite) TestPaginationKeyForInt() {
+	testValue := 1000
+	paginationKey := this.testPaginationKey([][]interface{}{{testValue, 0, 0}})
+	this.Require().Equal(paginationKey, uint64(testValue))
+}
+
+func (this *DMLEventsTestSuite) TestPaginationKeyForUint64() {
+	testValue := uint64(1000)
+	paginationKey := this.testPaginationKey([][]interface{}{{testValue, 0, 0}})
+	this.Require().Equal(paginationKey, testValue)
+}
+
+func (this *DMLEventsTestSuite) TestPaginationKeyForUint32() {
+	testValue := uint32(1000)
+	paginationKey := this.testPaginationKey([][]interface{}{{testValue, 0, 0}})
+	this.Require().Equal(paginationKey, uint64(testValue))
+}
+
+func (this *DMLEventsTestSuite) TestPaginationKeyForUint16() {
+	testValue := uint16(1000)
+	paginationKey := this.testPaginationKey([][]interface{}{{testValue, 0, 0}})
+	this.Require().Equal(paginationKey, uint64(testValue))
+}
+
+func (this *DMLEventsTestSuite) TestPaginationKeyForUint8() {
+	testValue := uint8(255)
+	paginationKey := this.testPaginationKey([][]interface{}{{testValue, 0, 0}})
+	this.Require().Equal(paginationKey, uint64(testValue))
+}
+
+func (this *DMLEventsTestSuite) TestPaginationKeyForUint() {
+	testValue := uint(1000)
+	paginationKey := this.testPaginationKey([][]interface{}{{testValue, 0, 0}})
+	this.Require().Equal(paginationKey, uint64(testValue))
+}
+
+func (this *DMLEventsTestSuite) TestPaginationKeyForByteArray() {
+	paginationKey := this.testPaginationKey([][]interface{}{{[]byte("1000"), 0, 0}})
+	this.Require().Equal(paginationKey, uint64(1000))
+}
+
+func (this *DMLEventsTestSuite) TestPaginationKeyForString() {
+	paginationKey := this.testPaginationKey([][]interface{}{{"1000", 0, 0}})
+	this.Require().Equal(paginationKey, uint64(1000))
+}
+
 func TestDMLEventsTestSuite(t *testing.T) {
 	suite.Run(t, new(DMLEventsTestSuite))
 }

@@ -268,6 +268,21 @@ class TypesTest < GhostferryTestCase
     end
   end
 
+  def test_uint64
+    # the mysql returns signed integers for bigint columns, requiring special
+    # conversion in ghostferry
+    [source_db, target_db].each do |db|
+      db.query("CREATE DATABASE IF NOT EXISTS #{DEFAULT_DB}")
+      db.query("CREATE TABLE IF NOT EXISTS #{DEFAULT_FULL_TABLE_NAME} (id bigint(19) unsigned NOT NULL AUTO_INCREMENT, primary key(id))")
+    end
+
+    source_db.query("INSERT INTO #{DEFAULT_FULL_TABLE_NAME} (id) VALUES (1), (1000), (10000000000)")
+
+    new_ghostferry(MINIMAL_GHOSTFERRY).run
+
+    assert_test_table_is_identical
+  end
+
   private
 
   def insert_json_on_source
